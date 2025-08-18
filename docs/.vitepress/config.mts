@@ -196,6 +196,43 @@ export default defineConfig({
         ],
       },
       {
+        text: 'Security',
+        collapsed: true,
+        items: [
+          {
+            text: 'Overview',
+            link: '/security/index',
+            items: [
+              {
+                text: 'Firewall',
+                collapsed: true,
+                items: [
+                  { text: 'Overview', link: '/security/firewall' },
+                  { text: 'Guide', link: '/security/firewall/guide' },
+                ]
+              },
+              {
+                text: 'IDPS',
+                collapsed: true,
+                items: [
+                  { text: 'Overview', link: '/security/idps' },
+                  { text: 'Fail2ban', link: '/security/idps/fail2ban' },
+                  { text: 'CrowdSec', link: '/security/idps/crowdsec' },
+                ]
+              },
+              { text: 'Server & Docker Hardening', link: '/security/hardening' },
+              { text: 'Access Control', link: '/security/access' },
+              { text: 'Secrets Management', link: '/security/secrets' },
+              { text: 'SSL/TLS Policy', link: '/security/ssl-tls' },
+              { text: 'Audit Logging', link: '/security/audit-logging' },
+              { text: 'Incident Response', link: '/security/incident-response' },
+              { text: 'Vulnerability Management', link: '/security/vulnerability-management' },
+              { text: 'Security Integrations', link: '/security/integrations' },
+            ]
+          }
+        ]
+      },
+      {
         text: 'Integrations',
         collapsed: true,
         items: [
