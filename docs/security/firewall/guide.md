@@ -1,71 +1,163 @@
-# Firewall Guide
+# Coolify Firewall Guide (UFW only)
 
-Step-by-step guidance to lock down your Coolify host and published services.
+A simple, copy-paste guide to lock down a Coolify host while keeping your apps reachable.
 
-## 1) Decide your control points
+## What you will expose
 
-- Host firewall: enforce default-deny and only open the ports you need
-- Reverse proxy: publish 80/443 only, keep app containers on private networks
-- Cloud/edge firewall: restrict to 80/443 and your SSH management IPs
+* SSH on port **22** (management)
+* HTTP on port **80** (ACME and redirects)
+* HTTPS on port **443** (apps via the reverse proxy)
 
-## 2) UFW quick start (Debian/Ubuntu)
+Everything else stays closed.
 
-```bash
-ufw default deny incoming
-ufw default allow outgoing
-ufw allow 22/tcp           # SSH
-ufw allow 80/tcp           # HTTP (ACME/redirect)
-ufw allow 443/tcp          # HTTPS
-ufw enable
-```
+If your hosting provider offers a cloud firewall such as Hetzner, you can skip the UFW steps. Use the provider firewall instead. It gives the same protection and is easier to manage from the provider website than from the terminal.
 
-With Docker
+---
 
-- Docker-published ports can bypass generic INPUT rules.
-- Use the `DOCKER-USER` chain or helper tools like `ufw-docker` to enforce policy on container traffic.
-
-## 3) firewalld quick start (RHEL/Alma/Rocky/Fedora)
+## 1) Install and reset UFW (Debian/Ubuntu)
 
 ```bash
-firewall-cmd --permanent --set-default-zone=public
-firewall-cmd --permanent --add-service=ssh
-firewall-cmd --permanent --add-service=http
-firewall-cmd --permanent --add-service=https
-firewall-cmd --reload
+sudo apt update
+sudo apt install -y ufw
+
+# Start from safe defaults
+sudo ufw --force reset
+sudo ufw default deny incoming
+sudo ufw default allow outgoing
 ```
 
-With Docker
+---
 
-- Ensure docker interfaces are placed in the expected zone or add rich rules for docker networks.
+## 2) Allow the needed ports, then enable
 
-## 4) Enforce policy before Docker rules (iptables)
+**Add SSH before enabling, or you may lock yourself out.**
 
-Docker inserts its own chains. Use `DOCKER-USER` to apply allow/deny first.
+:::warning
+if you have configured ssh to listen on a different port then please update **22/tcp** to the correct port
+:::
 
 ```bash
-# Example: allow only 80/443 inbound to the host, drop everything else
-iptables -I DOCKER-USER -p tcp --dport 80 -j ACCEPT
-iptables -I DOCKER-USER -p tcp --dport 443 -j ACCEPT
-iptables -A DOCKER-USER -j DROP
+# SSH (open to the world)
+sudo ufw allow 22/tcp
+
+# SSH (safer: only from your IP — replace 203.0.113.10)
+# sudo ufw allow from 203.0.113.10 to any port 22 proto tcp
+
+# Web
+sudo ufw allow 80/tcp
+sudo ufw allow 443 ## tcp and udp for http3
+
+# Enable and check
+sudo ufw enable
+sudo ufw status verbose
+
 ```
 
-Persist these rules using your distro’s mechanisms (e.g., `iptables-save` or a systemd unit).
+---
 
-## 5) Cloud and edge firewall patterns
+## 3) Using UFW with Docker and Coolify
 
-- Deny-all + allow only 80/443 to the reverse proxy and your SSH IPs
-- If using a CDN/WAF (e.g., Cloudflare), allow only their edge IPs to reach your origin
-- Prefer TLS “Full (strict)” with origin certificates
+Docker programs its own firewall rules, which can bypass generic UFW INPUT rules. To keep your “only 22/80/443” policy intact:
 
-## 6) Validate and monitor
+* Publish only what you actually need through Coolify (prefer routing apps via the proxy on 80/443).
+* Keep UFW defaults as above to block everything else.
+* **If you want UFW to enforce rules on Docker-published ports, use the helper script *ufw-docker* (community tool). It makes UFW apply to container traffic so your allow/deny rules are respected.**
+  → Link: [https://github.com/chaifeng/ufw-docker](https://github.com/chaifeng/ufw-docker)
 
-- Validate from outside: `nmap -Pn -p 22,80,443 your.domain`
-- Watch logs for drops/blocks and tune rules to avoid false positives
+**Example (not routed through the proxy):** you can allow Coolify dashboard ports **8000**, **6001**, and **6002** directly.
 
-## Troubleshooting tips
+```bash
+# Open only the ports you intend to publish
+sudo ufw allow 8000/tcp
+sudo ufw allow 6001:6002/tcp
 
-- Locked out over SSH? Most providers offer a web console to revert firewall changes
-- Publishing a new port via Docker and it’s not reachable? Check `DOCKER-USER` and host firewall rules first
-- ACME/Let’s Encrypt failing? Temporarily allow HTTP (80) and confirm DNS/edge firewall paths
+# After installing and configuring ufw-docker (see link above),
+# these UFW rules will also govern traffic to Docker-published ports.
+```
 
+Tip: If a published app isn’t reachable, run `sudo ufw status numbered` to confirm the rules exist, and verify whether it’s routed via the proxy or exposed as a host port.
 
+---
+
+## 4) Checking blocked connections
+
+By default UFW does not record blocked connections to reduce noise. If you need to find out why a connection is not allowed, you can turn logging on.
+
+### Enable logging:
+
+```bash
+sudo ufw logging on
+sudo ufw reload
+```
+
+### View dropped connections:
+
+```bash
+sudo journalctl -k -f
+```
+
+`-k` filters to `kernel` logs, which is where UFW writes its messages.
+
+`-f` tells `journalctl` to follow new entries. Leave this running while you try the connection from your application so you can see blocked attempts in real time.
+
+### Understanding the logged information:
+
+The log line may look complicated, however, here is a quick breakdown of the most vital information:
+
+```
+Aug 20 19:27:30 bookworm kernel: [UFW BLOCK] IN=br-17a84c85ad7d OUT= PHYSIN=veth949879c MAC=02:42:2c:5f:ed:c1:02:42:0a:00:01:05:08:00 SRC=10.0.1.5 DST=10.0.0.1 LEN=60 TOS=0x00 PREC=0x00 TTL=64 ID=10641 DF PROTO=TCP SPT=38686 DPT=23517 WINDOW=64240 RES=0x00 SYN URGP=0
+```
+
+`SRC=10.0.1.5`: Source IP address that initiated the connection
+
+`DST=10.0.0.1`: Destination IP address on your server
+
+`SPT=38686`: Source port used by the client, usually an ephemeral port
+
+`DPT=23517`: Destination port on your server the client tried to reach
+
+### Disable logging:
+
+After you have finished troubleshooting, turn logging off:
+
+```bash
+sudo ufw logging off
+sudo ufw reload
+```
+
+## 5) Optional: add a cloud firewall
+
+Mirror the same rules at your provider:
+
+* Allow **22** (optionally only from your management IP).
+* Allow **80** and **443**.
+* Deny everything else.
+
+If you use a CDN/WAF, you can further restrict inbound traffic to the provider’s edge IP ranges (advanced, optional).
+
+---
+
+## 6) Validate
+
+From another machine:
+
+```bash
+nmap -Pn -p 22,80,443 your.domain
+curl -I https://your.domain
+```
+
+On the server:
+
+```bash
+sudo ufw status verbose
+sudo ss -tulpn
+```
+
+---
+
+## Troubleshooting
+
+* **Locked out of SSH**: Use your VPS provider’s web console and run `sudo ufw allow 22/tcp` or `sudo ufw disable`.
+* **App not reachable**: Route via the Coolify proxy on 80/443 and confirm the container is healthy. Avoid exposing extra host ports unless you need them.
+* **Let’s Encrypt issues**: Keep **80** open during certificate issuance and confirm DNS/cloud-firewall paths.
+* **Rules look right but traffic still passes**: Review any tools that modify Docker’s firewall behavior. Keeping to UFW plus the proxy model is the simplest path.
