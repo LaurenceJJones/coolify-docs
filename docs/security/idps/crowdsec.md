@@ -1,93 +1,151 @@
 # CrowdSec Guide
 
-Collaborative intrusion detection and prevention with Remediations for firewalls and reverse proxies.
+CrowdSec is a collaborative intrusion detection and prevention system (IDPS). This guide shows how to monitor the Coolify reverse proxy (Traefik or Caddy), install the right parsers, and enable blocking with bouncers.
 
-## Blog Article
+## Blog article
 
-See [CrowdSec Blog Article](https://www.crowdsec.net/blog/securing-automated-app-deployment-crowdsec-and-coolify) for a in depth guide on deploying CrowdSec with Coolify.
+See the official write‑up: [Securing automated app deployment: CrowdSec + Coolify](https://www.crowdsec.net/blog/securing-automated-app-deployment-crowdsec-and-coolify) for an in‑depth walkthrough.
 
-## Short Guide
+## What you’ll set up
 
-### Install
+- Reverse proxy log parsing (Traefik or Caddy)
+- CrowdSec scenarios for common web attacks
+- Optional remediation (host firewall and/or reverse proxy bouncers)
 
-#### Repository
+## Prerequisites
 
-Debian/Ubuntu
+- A Coolify host with the built‑in proxy (`coolify-proxy`) running
+- Root/sudo access on the host
+- Docker installed (for container log acquisition)
+
+## Step 1 — Install CrowdSec
+
+The installer detects your distribution and sets up the repository for you.
 
 ```bash
 curl -s https://install.crowdsec.net | bash
 ```
 
-RHEL/Alma/Rocky/Fedora
+Then install the engine package (pick the command for your distro):
 
 ```bash
-curl -s https://install.crowdsec.net | bash
+# Debian/Ubuntu
+apt install -y crowdsec
+
+# RHEL/Alma/Rocky/Fedora
+dnf install -y crowdsec
 ```
 
-#### Package
+After installation, CrowdSec will auto‑detect some local services (typically SSH). Because the Coolify proxy runs in a container, we’ll explicitly configure log acquisition for it.
 
-Debian/Ubuntu
+## Step 2 — Install proxy collections
 
-```bash
-apt install crowdsec -y
-```
-
-RHEL/Alma/Rocky/Fedora
-
-```bash
-dnf install crowdsec -y
-```
-
-Upon installation CrowdSec will detect and find services to monitor, in this case it will be just SSH since the proxy is running inside of a container CrowdSec cannot detect it and we will have to configure this manually.
-
-### Collections
-
-Enable parsers/scenarios relevant to your stack:
+Install the parsers/scenarios for your proxy. Only install the one you actually use.
 
 ```bash
 cscli hub update
+# For Traefik users
 cscli collections install crowdsecurity/traefik
+# For Caddy users
 cscli collections install crowdsecurity/caddy
 ```
 
-### Acquisitions
+## Step 3 — Enable proxy access logs to stdout
 
-Acquisitions inform CrowdSec where to find log files to monitor, in this case we will inform CrowdSec to find the Coolify proxy.
+CrowdSec will read logs from the `coolify-proxy` container. Ensure your proxy writes access logs to stdout.
+
+### Traefik
+
+Add the following command flag to your Traefik configuration (for example in your Docker Compose service definition):
+
+```yaml
+command:
+  - "--accesslog=true"
+  - "--ping=true" # likely already present; shown for context
+```
+
+Apply the change by restarting the proxy container from the Coolify UI.
+
+### Caddy
+
+Enable access logs in your Caddy configuration so they go to stdout. Example (Caddy v2):
+
+```text
+{
+  # Global options
+  log {
+    output stdout
+    format json
+  }
+}
+
+your.site.tld {
+  # ... your site config ...
+  log {
+    output stdout
+  }
+}
+```
+
+Restart the proxy container after updating the configuration:
+
+```bash
+docker restart coolify-proxy
+```
+
+## Step 4 — Tell CrowdSec where to read logs (acquisitions)
+
+Create `/etc/crowdsec/acquis.d/proxy.yaml` to read Docker logs from the Coolify proxy. Set the `type` to match your proxy.
 
 ```yaml
 source: docker
 container_name:
   - coolify-proxy
 labels:
-  type: <type>
+  type: traefik   # or "caddy"
 ```
 
-Change `<type>` to be either `caddy` or `traefik` depending on which reverse proxy you are using from Coolify.
-
-### Configure Logging
-
-By default the Coolify proxy
-
-### Remediation Components
-
-- Firewall bouncer (nftables/iptables) to block at the host level
-- Reverse proxy bouncer for Traefik or Caddy to block at the edge
+Reload CrowdSec to pick up the acquisition change:
 
 ```bash
-cscli bouncers add my-firewall-bouncer --key
-# then install the relevant bouncer and configure with the key
+systemctl restart crowdsec
 ```
 
-### Verify
+## Step 5 — Add remediation (bouncers)
+
+Bouncers enforce decisions made by CrowdSec.
+
+- Host firewall bouncer: blocks at the network level (recommended)
+- Reverse proxy bouncer (Traefik or Caddy): blocks at the edge
+
+Generate an API key and install your chosen bouncer(s):
 
 ```bash
-cscli metrics
-cscli decisions list
+cscli bouncers add firewall-bouncer --key
+
+# Install a firewall bouncer package
+# Debian/Ubuntu (nftables)
+apt install -y crowdsec-firewall-bouncer-nftables
+# RHEL/Alma/Rocky/Fedora (nftables)
+dnf install -y crowdsec-firewall-bouncer-nftables
+
+# Then configure the bouncer with the API key it prints (usually in /etc/crowdsec/bouncers/)
 ```
+
+Refer to the Traefik/Caddy bouncer documentation if you prefer blocking directly at the proxy.
+
+## Step 6 — Verify it works
+
+```bash
+cscli metrics           # check parsers/scenarios ingesting logs
+cscli decisions list    # see current bans/decisions
+```
+
+You should see the proxy stream in the `metrics` output once traffic flows through it.
 
 ## Tips
 
-- Tune scenarios to reduce false positives; test in alert-only mode first if needed
-- Export alerts to your notification channels
-
+- Start in alert‑only mode for new scenarios if you’re worried about false positives
+- Tune scenarios based on your application traffic profile
+- Export alerts to your preferred notification channel
 
